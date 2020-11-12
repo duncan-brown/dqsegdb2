@@ -17,11 +17,14 @@
 """HTTP interactions with DQSEGDB
 """
 
+import os
 import json
 try:
+    from urllib.request import Request
     from urllib.request import urlopen
     from urllib.parse import urlparse
 except ImportError:  # python < 3
+    from urllib2 import Request
     from urllib2 import urlopen
     from urlparse import urlparse
 
@@ -30,8 +33,15 @@ def request(url, **urlopen_kw):
     """Request data from a URL
 
     If the URL uses HTTPS and the `context` keyword
-    is not given, X509 credentials will be automatically loaded
-    using :func:`gwdatafind.utils.find_credential`.
+    is not given, a SciToken will be looked for in the
+    following search order:
+
+    1. The contents of the file `${_CONDOR_CREDS}/scitokens.use`
+    2. The contents of the file pointed to by the environment variable `${SCITOKENS_FILE}`
+    3. The contents of the environment variable `${SCITOKENS}`
+
+    If not SciToken can be found, an X509 credentials will be automatically
+    loaded using :func:`gwdatafind.utils.find_credential`.
 
     Parameters
     ----------
@@ -48,10 +58,29 @@ def request(url, **urlopen_kw):
     """
     if urlparse(url).scheme == 'https' and 'context' not in urlopen_kw:
         from ssl import create_default_context
-        from gwdatafind.utils import find_credential
         urlopen_kw['context'] = context = create_default_context()
-        context.load_cert_chain(*find_credential())
-    return urlopen(url, **urlopen_kw)
+        req = Request(url)
+
+        if os.environ.get('_CONDOR_CREDS'):
+          scitokens_path = os.path.join(os.environ['_CONDOR_CREDS'],'scitokens.use')
+        elif os.environ.get('SCITOKENS_FILE'):
+          scitokens_path = 'scitokens.use'
+        else:
+          scitokens_path = ''
+
+        if os.path.isfile(scitokens_path):
+          with open(scitokens_path) as f: token_data = f.read()
+        elif os.environ.get('SCITOKEN'):
+          token_data = os.environ['SCITOKEN']
+        else:
+          token_data = None
+          from gwdatafind.utils import find_credential
+          context.load_cert_chain(*find_credential())
+
+        if token_data:
+          req.add_header("Authorization", "Bearer " + token_data.rstrip())
+
+    return urlopen(req, **urlopen_kw)
 
 
 def request_json(url, **kwargs):
